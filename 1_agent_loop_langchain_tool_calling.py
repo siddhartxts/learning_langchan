@@ -16,19 +16,33 @@ MODEL = "gpt-4o-mini"
 
 @tool
 def get_product_price(product: str) -> float:
-    """Look up the price of a product in the catalog."""
+    """Look up the price of a product in the catalog.
+
+    The catalog contains exactly three products. The `product` argument must be
+    one of these exact lowercase names: "laptop", "headphones", "keyboard".
+    There are no brands or variants — "laptop" is a complete, valid product name.
+
+    Returns the price in dollars as a float.
+    """
     print(f"    >> Executing get_product_price(product='{product}')")
     prices = {"laptop": 1299.99, "headphones": 149.95, "keyboard": 89.50}
-    return prices.get(product, 0)
+    return prices.get(product.lower().strip(), 0)
 
 
 @tool
 def apply_discount(price: float, discount_tier: str) -> float:
-    """Apply a discount tier to a price and return the final price.
-    Available tiers: bronze, silver, gold."""
+    """Apply a discount tier to a price and return the final discounted price.
+
+    The `discount_tier` argument must be one of these exact lowercase names:
+    "bronze", "silver", "gold". These are complete, valid tier names — no
+    membership number or other detail is needed.
+
+    The `price` argument must be a price previously returned by
+    get_product_price. Always call get_product_price before calling this tool.
+    """
     print(f"    >> Executing apply_discount(price={price}, discount_tier='{discount_tier}')")
     discount_percentages = {"bronze": 5, "silver": 12, "gold": 23}
-    discount = discount_percentages.get(discount_tier, 0) 
+    discount = discount_percentages.get(discount_tier.lower().strip(), 0)
     return round(price * (1 - discount / 100), 2)
 
 
@@ -40,7 +54,7 @@ def run_agent(question: str):
     tools = [get_product_price, apply_discount]
     tools_dict = {t.name: t for t in tools}
 
-    llm = init_chat_model(f"ollama:{MODEL}", temperature=0)
+    llm = init_chat_model(f"openai:{MODEL}", temperature=0)
     llm_with_tools = llm.bind_tools(tools)
 
     print(f"Question: {question}")
@@ -52,6 +66,12 @@ def run_agent(question: str):
                 "You are a helpful shopping assistant. "
                 "You have access to a product catalog tool "
                 "and a discount tool.\n\n"
+                "CATALOG FACTS:\n"
+                "- The only valid products are exactly: laptop, headphones, keyboard.\n"
+                "- The only valid discount tiers are exactly: bronze, silver, gold.\n"
+                "- There are no brands, models, or variants. If the user says "
+                "'a laptop', that IS the exact catalog product 'laptop'. "
+                "If the user says 'gold discount', that IS the exact tier 'gold'.\n\n"
                 "STRICT RULES — you must follow these exactly:\n"
                 "1. NEVER guess or assume any product price. "
                 "You MUST call get_product_price first to get the real price.\n"
@@ -60,8 +80,11 @@ def run_agent(question: str):
                 "returned by get_product_price — do NOT pass a made-up number.\n"
                 "3. NEVER calculate discounts yourself using math. "
                 "Always use the apply_discount tool.\n"
-                "4. If the user does not specify a discount tier, "
-                "ask them which tier to use — do NOT assume one."
+                "4. If the user's request already mentions a valid product AND "
+                "a valid discount tier, do NOT ask any clarifying questions — "
+                "call the tools immediately.\n"
+                "5. Only ask a clarifying question if the product or discount "
+                "tier is genuinely missing or is not in the valid lists above."
             )
         ),
         HumanMessage(content=question),
@@ -74,31 +97,37 @@ def run_agent(question: str):
 
         tool_calls = ai_message.tool_calls
 
+        print(f"  [DEBUG] ai_message.content: {ai_message.content!r}")
+        print(f"  [DEBUG] ai_message.tool_calls: {tool_calls}")
+
         # If no tool calls, this is the final answer
         if not tool_calls:
             print(f"\nFinal Answer: {ai_message.content}")
             return ai_message.content
 
-        # Process only the FIRST tool call — force one tool per iteration
-        tool_call = tool_calls[0]
-        tool_name = tool_call.get("name")
-        tool_args = tool_call.get("args", {})
-        tool_call_id = tool_call.get("id")
-
-        print(f"  [Tool Selected] {tool_name} with args: {tool_args}")
-
-        tool_to_use = tools_dict.get(tool_name)
-        if tool_to_use is None:
-            raise ValueError(f"Tool '{tool_name}' not found")
-
-        observation = tool_to_use.invoke(tool_args)
-
-        print(f"  [Tool Result] {observation}")
-
         messages.append(ai_message)
-        messages.append(
-            ToolMessage(content=str(observation), tool_call_id=tool_call_id)
-        )
+
+        # Answer EVERY tool call in this message. The OpenAI API rejects the
+        # next request if any tool_call_id is left without a ToolMessage.
+        for tool_call in tool_calls:
+            tool_name = tool_call.get("name")
+            tool_args = tool_call.get("args", {})
+            tool_call_id = tool_call.get("id")
+
+            print(f"  [DEBUG] selected tool name: {tool_name}")
+            print(f"  [DEBUG] selected tool args: {tool_args}")
+
+            tool_to_use = tools_dict.get(tool_name)
+            if tool_to_use is None:
+                raise ValueError(f"Tool '{tool_name}' not found")
+
+            observation = tool_to_use.invoke(tool_args)
+
+            print(f"  [DEBUG] tool result: {observation}")
+
+            messages.append(
+                ToolMessage(content=str(observation), tool_call_id=tool_call_id)
+            )
 
     print("ERROR: Max iterations reached without a final answer")
     return None
