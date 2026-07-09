@@ -24,14 +24,7 @@ if __name__ == "__main__":
     embeddings = OpenAIEmbeddings(
         model="text-embedding-3-small",
         dimensions=512,
-        openai_api_key=os.environ.get("OPENAI_API_KEY"),
     )
-
-    print(
-        f"using embedding model: {embeddings.model} (dimensions={embeddings.dimensions})"
-    )
-    sample_vector = embeddings.embed_query("dimension check")
-    print(f"sample embedding has {len(sample_vector)} dimensions")
 
     index_name = os.environ["INDEX_NAME"]
     print(f"ingesting into Pinecone index: {index_name}")
